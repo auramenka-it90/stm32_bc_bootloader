@@ -8,17 +8,14 @@
 #include "board_support_package.h"
 
 /* --- Configuration --- */
-/* Выбор режима работы: 1 - Continuous (Непрерывный, по умолчанию), 0 - One-Shot (Одиночный) */
+/* Operating mode select: 1 - Continuous (default), 0 - One-Shot */
 #define DS1621_MODE_CONTINUOUS    1
 
-/* Использовать опрос бита DONE вместо фиксированной задержки 800мс (работает только в режиме One-Shot) */
+/* Poll the DONE bit instead of a fixed 800ms delay (One-Shot mode only) */
 #define DS1621_USE_DONE_POLLING   1 
 
-/* --- I2C Hardware Pins --- */
-#define I2C1_SCL_DS1621_Pin       GPIO_PIN_8
-#define I2C1_SCL_DS1621_GPIO_Port GPIOB
-#define I2C1_SDA_DS1621_Pin       GPIO_PIN_9
-#define I2C1_SDA_DS1621_GPIO_Port GPIOB
+/* --- I2C Hardware Pins (from main.h via gpio_fallbacks.h) --- */
+#include "gpio_fallbacks.h"
 
 #define DS1621_BIT_1SHOT        0x01
 #define DS1621_ADDR             (0x48 << 1)
@@ -73,8 +70,8 @@ float         DS1621_GetLastTemperature(void);
 osMutexId_t   DS1621_GetI2CMutex(void);
 
 /**
- * @brief Создает задачу RTOS для периодического опроса датчика.
- * @return osThreadId_t Хэндл созданной задачи (или NULL при ошибке).
+ * @brief Creates the RTOS task for periodic sensor polling.
+ * @return osThreadId_t Handle of the created task (NULL on error).
  */
 osThreadId_t  DS1621_CreateTask(void);
 

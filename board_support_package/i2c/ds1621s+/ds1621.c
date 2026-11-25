@@ -1,9 +1,9 @@
 #include "ds1621.h"
 
 static osMutexId_t i2c_mutex = NULL;
-static I2C_HandleTypeDef *p_hi2c = NULL; 
+static I2C_HandleTypeDef *p_hi2c = NULL;
 static float last_temp = -999.0f;
-static const uint32_t I2C_TIMEOUT = 200;
+static const uint32_t I2C_TIMEOUT = 100U;
 
 /* --- RTOS Task Variables --- */
 static osThreadId_t ds1621_task_handle = NULL;
@@ -26,9 +26,8 @@ osMutexId_t DS1621_GetI2CMutex(void) {
  */
 static DS1621_Status i2c_transfer(uint8_t reg, uint8_t *pData, uint16_t size, bool is_read) {
     if (p_hi2c == NULL || i2c_mutex == NULL) return DS1621_ERROR_INIT;
-    
-    /* Mutex timeout (300ms) is higher than HAL I2C timeout (200ms) to avoid race conditions */
-    if (osMutexAcquire(i2c_mutex, 300) != osOK) return DS1621_ERROR_BUSY;
+
+    if (osMutexAcquire(i2c_mutex, 150) != osOK) return DS1621_ERROR_BUSY;
 
     HAL_StatusTypeDef res;
     if (is_read) {
@@ -42,78 +41,77 @@ static DS1621_Status i2c_transfer(uint8_t reg, uint8_t *pData, uint16_t size, bo
 }
 
 /**
- * @brief Программная разблокировка зависшей шины I2C (Clear BUSY flag)
- * Использует макросы пинов из ds1621.h
+ * @brief Software unlock of a hung I2C bus (clear BUSY flag).
+ * Pin macros come from main.h via gpio_fallbacks.h.
  */
 static void I2C_RecoverBus(I2C_HandleTypeDef *hi2c) {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
 
-    // Отключаем аппаратный I2C
+    /* Disable the hardware I2C peripheral */
     HAL_I2C_DeInit(hi2c);
 
-    // Настраиваем пины как выходы с открытым стоком (Open-Drain)
+    /* Configure the pins as open-drain outputs */
     GPIO_InitStruct.Pin = I2C1_SCL_DS1621_Pin | I2C1_SDA_DS1621_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
 
-    // Инициализируем порты (предполагается, что они оба на GPIOB,
-    // но если они на разных, нужно делать HAL_GPIO_Init для каждого)
+    /* Init the ports (both assumed on GPIOB; split-port case handled too) */
     HAL_GPIO_Init(I2C1_SCL_DS1621_GPIO_Port, &GPIO_InitStruct);
     if (I2C1_SCL_DS1621_GPIO_Port != I2C1_SDA_DS1621_GPIO_Port) {
         HAL_GPIO_Init(I2C1_SDA_DS1621_GPIO_Port, &GPIO_InitStruct);
     }
 
-    // Устанавливаем высокий уровень на обеих линиях
+    /* Release both lines high */
     HAL_GPIO_WritePin(I2C1_SDA_DS1621_GPIO_Port, I2C1_SDA_DS1621_Pin, GPIO_PIN_SET);
     HAL_GPIO_WritePin(I2C1_SCL_DS1621_GPIO_Port, I2C1_SCL_DS1621_Pin, GPIO_PIN_SET);
 
-    // Небольшая задержка
+    /* Short delay */
     for(volatile int i=0; i<1000; i++) {}
 
-    // Генерируем 9 тактов на линии SCL, чтобы "выдавить" зависший бит из слейва
+    /* Clock 9 pulses on SCL to flush the stuck bit out of the slave */
     for (int i = 0; i < 9; i++) {
-        // SCL Low
+        /* SCL low */
         HAL_GPIO_WritePin(I2C1_SCL_DS1621_GPIO_Port, I2C1_SCL_DS1621_Pin, GPIO_PIN_RESET);
         for(volatile int j=0; j<1000; j++) {}
 
-        // SCL High
+        /* SCL high */
         HAL_GPIO_WritePin(I2C1_SCL_DS1621_GPIO_Port, I2C1_SCL_DS1621_Pin, GPIO_PIN_SET);
         for(volatile int j=0; j<1000; j++) {}
 
-        // Если слейв отпустил линию SDA (она стала высокой), можно прервать цикл
+        /* If the slave released SDA (line is high now), stop early */
         if (HAL_GPIO_ReadPin(I2C1_SDA_DS1621_GPIO_Port, I2C1_SDA_DS1621_Pin) == GPIO_PIN_SET) {
             break;
         }
     }
 
-    // Генерируем условие STOP вручную (SCL=High, затем SDA: Low -> High)
+    /* Generate a STOP condition manually (SCL high, then SDA: low -> high) */
     HAL_GPIO_WritePin(I2C1_SCL_DS1621_GPIO_Port, I2C1_SCL_DS1621_Pin, GPIO_PIN_RESET);
     for(volatile int j=0; j<1000; j++) {}
     HAL_GPIO_WritePin(I2C1_SDA_DS1621_GPIO_Port, I2C1_SDA_DS1621_Pin, GPIO_PIN_RESET);
     for(volatile int j=0; j<1000; j++) {}
 
-    HAL_GPIO_WritePin(I2C1_SCL_DS1621_GPIO_Port, I2C1_SCL_DS1621_Pin, GPIO_PIN_SET); // SCL High
+    HAL_GPIO_WritePin(I2C1_SCL_DS1621_GPIO_Port, I2C1_SCL_DS1621_Pin, GPIO_PIN_SET); /* SCL high */
     for(volatile int j=0; j<1000; j++) {}
-    HAL_GPIO_WritePin(I2C1_SDA_DS1621_GPIO_Port, I2C1_SDA_DS1621_Pin, GPIO_PIN_SET); // SDA High (STOP)
+    HAL_GPIO_WritePin(I2C1_SDA_DS1621_GPIO_Port, I2C1_SDA_DS1621_Pin, GPIO_PIN_SET); /* SDA high (STOP) */
     for(volatile int j=0; j<1000; j++) {}
 
-    // Аппаратный сброс модуля I2C1
+    /* Hardware reset of the I2C1 peripheral */
     __HAL_RCC_I2C1_FORCE_RESET();
     for(volatile int j=0; j<1000; j++) {}
     __HAL_RCC_I2C1_RELEASE_RESET();
 
-    // Возвращаем пины обратно в режим альтернативной функции для I2C
+    /* Return the pins to I2C alternate-function mode */
     GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
     GPIO_InitStruct.Pull = GPIO_PULLUP;
-    GPIO_InitStruct.Alternate = GPIO_AF4_I2C1; // Для I2C1 на STM32F4
+    GPIO_InitStruct.Alternate = GPIO_AF4_I2C1; /* I2C1 on STM32F4 */
 
     HAL_GPIO_Init(I2C1_SCL_DS1621_GPIO_Port, &GPIO_InitStruct);
     if (I2C1_SCL_DS1621_GPIO_Port != I2C1_SDA_DS1621_GPIO_Port) {
         HAL_GPIO_Init(I2C1_SDA_DS1621_GPIO_Port, &GPIO_InitStruct);
     }
 
-    // Снова инициализируем драйвер HAL
+    /* Re-initialize the HAL driver */
     HAL_I2C_Init(hi2c);
 }
 
@@ -129,22 +127,17 @@ bool DS1621_Init(I2C_HandleTypeDef *hi2c_ptr) {
         if (i2c_mutex == NULL) return false;
     }
 
-    /* Проверка аппаратного состояния шины. Если зависла (BUSY): */
-   /* if (HAL_I2C_GetState(p_hi2c) == HAL_I2C_STATE_BUSY) {
+    /* Check the hardware state of the I2C layer: if it is not ready */
+    /* (busy, error, timeout) while the peripheral is enabled, recover the bus. */
+    HAL_I2C_StateTypeDef i2c_state = HAL_I2C_GetState(p_hi2c);
+
+    if (i2c_state != HAL_I2C_STATE_READY && i2c_state != HAL_I2C_STATE_RESET) {
         I2C_RecoverBus(p_hi2c);
-    }*/
+    }
 
-    /* Проверка аппаратного состояния шины. */
-	HAL_I2C_StateTypeDef i2c_state = HAL_I2C_GetState(p_hi2c);
-
-	// Если I2C не готов (завис, ошибка, таймаут) И при этом аппаратно включен
-	if (i2c_state != HAL_I2C_STATE_READY && i2c_state != HAL_I2C_STATE_RESET) {
-		I2C_RecoverBus(p_hi2c);
-	}
-
-    // Проверяем, есть ли датчик на шине
+    /* Check that the sensor is present on the bus */
     if (HAL_I2C_IsDeviceReady(p_hi2c, DS1621_ADDR, 3, I2C_TIMEOUT) != HAL_OK) {
-        // Если датчик всё еще молчит, пробуем восстановить шину как последний шанс
+        /* Sensor still silent: try bus recovery as a last chance */
         I2C_RecoverBus(p_hi2c);
         if (HAL_I2C_IsDeviceReady(p_hi2c, DS1621_ADDR, 3, I2C_TIMEOUT) != HAL_OK) {
             return false;
@@ -155,18 +148,18 @@ bool DS1621_Init(I2C_HandleTypeDef *hi2c_ptr) {
     if (i2c_transfer(DS1621_REG_CONFIG, &cfg_status, 1, true) != DS1621_OK) return false;
 
 #if DS1621_MODE_CONTINUOUS == 1
-    // Сбрасываем бит 1SHOT (устанавливаем в 0) для включения НЕПРЕРЫВНОГО режима
+    /* Clear the 1SHOT bit to enable continuous conversion mode */
     cfg_status &= ~DS1621_BIT_1SHOT;
 #else
-    // Устанавливаем бит 1SHOT (устанавливаем в 1) для включения ОДИНОЧНОГО режима
+    /* Set the 1SHOT bit to enable one-shot conversion mode */
     cfg_status |= DS1621_BIT_1SHOT;
 #endif
 
     if (i2c_transfer(DS1621_REG_CONFIG, &cfg_status, 1, false) != DS1621_OK) return false;
 
 #if DS1621_MODE_CONTINUOUS == 1
-    // В непрерывном режиме команду START нужно подать всего ОДИН раз при инициализации!
-    if (osMutexAcquire(i2c_mutex, 300) == osOK) {
+    /* In continuous mode the START command is sent only once, at init */
+    if (osMutexAcquire(i2c_mutex, 150) == osOK) {
         uint8_t cmd_start = DS1621_CMD_START;
         HAL_I2C_Master_Transmit(p_hi2c, DS1621_ADDR, &cmd_start, 1, I2C_TIMEOUT);
         osMutexRelease(i2c_mutex);
@@ -184,9 +177,9 @@ DS1621_Status DS1621_Update(void) {
     DS1621_Status res;
 
 #if DS1621_MODE_CONTINUOUS == 0
-    /* --- РЕЖИМ ONE-SHOT --- */
+    /* --- ONE-SHOT MODE --- */
     /* 1. Start conversion */
-    if (osMutexAcquire(i2c_mutex, 300) == osOK) {
+    if (osMutexAcquire(i2c_mutex, 150) == osOK) {
         uint8_t cmd_start = DS1621_CMD_START;
         HAL_I2C_Master_Transmit(p_hi2c, DS1621_ADDR, &cmd_start, 1, I2C_TIMEOUT);
         osMutexRelease(i2c_mutex);
@@ -199,9 +192,9 @@ DS1621_Status DS1621_Update(void) {
     for (int i = 0; i < 10; i++) {
         osDelay(100);
         if (i2c_transfer(DS1621_REG_CONFIG, &cfg_status, 1, true) == DS1621_OK) {
-            if (cfg_status & DS1621_BIT_DONE) { 
-                is_done = true; 
-                break; 
+            if (cfg_status & DS1621_BIT_DONE) {
+                is_done = true;
+                break;
             }
         }
     }
@@ -212,7 +205,7 @@ DS1621_Status DS1621_Update(void) {
 #endif
 #endif /* DS1621_MODE_CONTINUOUS == 0 */
 
-    /* --- В НЕПРЕРЫВНОМ РЕЖИМЕ МЫ ПРОПУСКАЕМ БЛОК ВЫШЕ И СРАЗУ ЧИТАЕМ --- */
+    /* In continuous mode the block above is skipped and we read immediately */
     /* 3. Retrieve and store calculated data */
     res = DS1621_GetTemperatureHighRes(&current);
     if (res == DS1621_OK) {
@@ -225,20 +218,22 @@ DS1621_Status DS1621_Update(void) {
  * @brief Calculate high-resolution temperature from registers.
  */
 DS1621_Status DS1621_GetTemperatureHighRes(float *out_temp) {
-    uint8_t temp_data[2];
-    uint8_t count_remain;
-    uint8_t count_per_c;
+    if (out_temp == NULL) return DS1621_ERROR_INIT;
+
+    uint8_t temp_data[2] = {0};
+    uint8_t count_remain = 0;
+    uint8_t count_per_c = 0;
 
     if (i2c_transfer(DS1621_REG_TEMP, temp_data, 2, true) != DS1621_OK) return DS1621_ERROR_I2C;
     if (i2c_transfer(DS1621_REG_COUNT, &count_remain, 1, true) != DS1621_OK) return DS1621_ERROR_I2C;
     if (i2c_transfer(DS1621_REG_SLOPE, &count_per_c, 1, true) != DS1621_OK) return DS1621_ERROR_I2C;
 
-    if (count_per_c == 0) return DS1621_ERROR_I2C; // Prevent division by zero
+    if (count_per_c == 0) return DS1621_ERROR_I2C; /* Prevent division by zero */
 
-    // Read raw temperature (truncate the 0.5C bit, keep only integer part)
+    /* Read raw temperature (truncate the 0.5C bit, keep only integer part) */
     int8_t temp_read = (int8_t)temp_data[0];
 
-    // High resolution formula: Temperature = temp_read - 0.25 + (count_per_c - count_remain) / count_per_c
+    /* High resolution formula: Temperature = temp_read - 0.25 + (count_per_c - count_remain) / count_per_c */
     *out_temp = (float)temp_read - 0.25f + ((float)(count_per_c - count_remain) / (float)count_per_c);
 
     return DS1621_OK;
@@ -252,23 +247,23 @@ float DS1621_GetLastTemperature(void) {
 }
 
 /**
- * @brief Задача FreeRTOS для работы с датчиком
+ * @brief FreeRTOS task for periodic sensor handling.
  */
 static void DS1621_Task(void *argument) {
     for (;;) {
-        // Функция сама решает, как работать, опираясь на DS1621_MODE_CONTINUOUS
+        /* The function behaves according to DS1621_MODE_CONTINUOUS */
         DS1621_Update();
 
-        // Пауза между обновлениями температуры
+        /* Delay between temperature updates */
         osDelay(1000);
     }
 }
 
 /**
- * @brief Создает задачу RTOS для опроса датчика.
+ * @brief Creates the RTOS task for polling the sensor.
  */
 osThreadId_t DS1621_CreateTask(void) {
-    // Если задача уже создана, просто возвращаем ее хэндл
+    /* If the task already exists, just return its handle */
     if (ds1621_task_handle != NULL) {
         return ds1621_task_handle;
     }
