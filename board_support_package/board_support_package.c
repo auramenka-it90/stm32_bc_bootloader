@@ -138,7 +138,7 @@ uint32_t init_hardware(void) {
 	const uint32_t BOARD_LOCKER_THRESHOLD = 1000;
 
 	if (FramLocker_Init(BOARD_LOCKER_THRESHOLD, Locker_ThresholdCallback)!= osOK){
-		test_hardware_result |= _B_FAULT_AM1805_;
+		test_hardware_result |= _B_FAULT_LOCKER_;
 	}
 #endif
 	//********** TERMINAL (eAssist) INITIALIZATION **********

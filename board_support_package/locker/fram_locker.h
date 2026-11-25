@@ -90,6 +90,11 @@ extern FramLocker_Handle_t fram_locker;
  */
 osStatus_t FramLocker_Init(uint32_t threshold, FramLocker_Callback_t callback);
 
+/* WARNING: the three functions below commit state to FRAM WITHOUT password
+   check. They are currently unused: do NOT wire them to terminal signals or
+   any external path - FramLocker_SaveWithPassword() is the only authorized
+   persistence door (terminal 'magic' signal). */
+
 /**
  * @brief Deinitializes the locker module and commits memory states to FRAM.
  * @return osStatus_t Status of the FRAM write transactions.
