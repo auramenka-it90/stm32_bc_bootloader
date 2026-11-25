@@ -77,39 +77,55 @@ bool eeprom_memory_write_words(const uint32_t *p_data, uint32_t addr, uint32_t w
     return result;
 }
 
+/*
+ * Validates the application binary using hardware CRC32.
+ */
 bool check_application(void) {
     fw_header_t *fw_info = NULL;
     uint32_t *search_ptr = (uint32_t *)APPLICATION_ADDRESS;
 
-    // 1. Ищем магическое слово (сканируем первые 1024 байта / 256 слов)
+    /* Invalidate flash caches: freshly programmed data must not be shadowed
+     * by cache lines fetched before the erase/program operation */
+    __HAL_FLASH_INSTRUCTION_CACHE_DISABLE();
+    __HAL_FLASH_DATA_CACHE_DISABLE();
+    __HAL_FLASH_INSTRUCTION_CACHE_RESET();
+    __HAL_FLASH_DATA_CACHE_RESET();
+    __HAL_FLASH_INSTRUCTION_CACHE_ENABLE();
+    __HAL_FLASH_DATA_CACHE_ENABLE();
+
+    /* 1. Search for the magic word (scan the first 1024 bytes / 256 words) */
     for (int i = 0; i < 256; i++) {
-        if (search_ptr[i] == 0x55AA55AA) {
+        if (search_ptr[i] == 0x55AA55AAU) {
             fw_info = (fw_header_t *)&search_ptr[i];
             break;
         }
     }
 
-    // 2. Базовые проверки на отсутствие прошивки или "непропатченность"
-    if (fw_info == NULL || fw_info->fw_size == 0xFFFFFFFF) {
+    /* 2. Basic safety checks for missing or corrupted firmware */
+    if (fw_info == NULL || fw_info->fw_size == 0xFFFFFFFFU || fw_info->fw_size == 0) {
         return false;
     }
 
-    // 3. Подготовка к расчету CRC
+    /* The declared image must fit within the allocated application region */
+    if (fw_info->fw_size > FLASH_CPU_SIZE) {
+        return false;
+    }
+
+    /* 3. Prepare data offsets for CRC32 calculation */
     uint32_t *payload_ptr = (uint32_t *)(fw_info + 1);
     uint32_t header_offset_bytes = (uint32_t)payload_ptr - APPLICATION_ADDRESS;
 
-    // Защита: если размер указан криво (меньше самого заголовка),
-    // чтобы не уйти в HardFault при делении и расчете:
+    /* Safety guard: if size is corrupt (smaller than the header itself), prevent HardFault */
     if (fw_info->fw_size <= header_offset_bytes) {
         return false;
     }
 
     uint32_t payload_bytes = fw_info->fw_size - header_offset_bytes;
-    uint32_t payload_words = payload_bytes / 4; // Переводим в 32-битные слова
+    uint32_t payload_words = payload_bytes / 4; /* Convert byte size into 32-bit words */
 
-    // 4. Считаем аппаратный CRC
+    /* 4. Calculate hardware-accelerated CRC32 */
     uint32_t calc_crc = HAL_CRC_Calculate(&hcrc, payload_ptr, payload_words);
 
-    // 5. Возвращаем результат сравнения (true/false)
+    /* 5. Return comparison result */
     return (calc_crc == fw_info->crc32);
 }

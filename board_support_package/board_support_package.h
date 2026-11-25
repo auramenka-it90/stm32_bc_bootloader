@@ -28,10 +28,12 @@
  *   system behavior configuration
  *   comment if we don't use it
  */
-#define	_BHV_FPGA_START_		1
+/* FPGA stays in reset during bootloader run (MSB policy, see PIN_MGMT_Init) */
+//#define	_BHV_FPGA_START_		1
 #define	_BHV_RGB_LED_			1
 #define	_BHV_CHECK_APPL_		1
 #define	_BHV_JUMP_APPL_			1
+#define	_BHV_FAST_JUMP_			1
 #define _BHV_LOCKER_CHECK_		1
 
 /**********************************************************
@@ -60,6 +62,11 @@ extern	UART_HandleTypeDef 	huart2;
 extern	DMA_HandleTypeDef 	hdma_usart2_rx;
 extern	DMA_HandleTypeDef 	hdma_usart2_tx;
 
+// Additional peripherals for system teardown (bsp_deinit)
+extern	SPI_HandleTypeDef 	hspi2;
+extern	CAN_HandleTypeDef 	hcan2;
+extern	RNG_HandleTypeDef 	hrng;
+
 /* ********************************************************
  * test	fault bits  */
 #define		_B_TEST_HARDWARE_SUCCESS_	0
@@ -83,7 +90,9 @@ bool 		test_status_hardware(uint32_t module);
 uint32_t 	get_status_hardware(void);
 
 bool	get_rcc_csr(void);
+extern volatile bool soft_reset;
 void	bsp_system_reset(void);
+void    bsp_deinit(void); /* Safe system-wide hardware teardown */
 void 	jump_main_application(uint32_t addr);
 
 void	DWT_Init(void);

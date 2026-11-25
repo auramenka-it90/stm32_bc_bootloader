@@ -16,7 +16,7 @@
 // Global hardware test result variable
 uint32_t test_hardware_result = _B_TEST_HARDWARE_SUCCESS_;
 //	true - software reset/ false - hardware
-bool	soft_reset;
+volatile bool	soft_reset;
 // true - suspend usb-uart
 bool	w_up_uart;
 /* rgb led handle */
@@ -52,7 +52,6 @@ static void Locker_ThresholdCallback(void) {
 uint32_t init_hardware(void) {
 
 	DWT_Init();
-	soft_reset=	get_rcc_csr();
 	w_up_uart=	PIN_Read(&pin_w_up_uart);
 
 	// ********** Initialize GPIO ***********
@@ -117,7 +116,7 @@ uint32_t init_hardware(void) {
 			}
 			AM1805_Time_t now;
 
-			// 3. Читаем время. Если оно сброшено (год <= 2000), ставим дату сборки
+			// Read RTC time. If it is uninitialized (year <= 2000), stamp the build date
 			if (AM1805_GetTime(&now) == AM1805_OK) {
 				if (now.year <= 2000) {
 					AM1805_Time_t build = AM1805_ParseBuildTime(__DATE__,__TIME__);
@@ -168,102 +167,188 @@ void bsp_system_reset(void) {
     HAL_NVIC_SystemReset();
 }
 
-// check reset
+/**
+ * @brief  Checks if a Software Reset occurred.
+ *         Clears the sticky RCC reset flags only on a soft reset, so hard
+ *         reset causes (POR/PIN/IWDG) stay available for the application.
+ *         Call before HAL_Init (see main.c).
+ */
 inline bool get_rcc_csr(void) {
-	// Проверяем флаг (макрос возвращает SET или RESET)
+	// Check the sticky software reset flag (SET or RESET)
 	bool is_soft_reset = (__HAL_RCC_GET_FLAG(RCC_FLAG_SFTRST) != RESET);
 
-	// ОЧИЩАЕМ все флаги причин сброса!
-	// Это гарантирует, что следующая перезагрузка покажет только свежую причину.
-	__HAL_RCC_CLEAR_RESET_FLAGS();
+	if (is_soft_reset) {
+		/* Clear sticky reset flags, otherwise SFTRST remains 'true' on subsequent power-on resets */
+		__HAL_RCC_CLEAR_RESET_FLAGS();
+	}
 
 	return is_soft_reset;
 }
 
 
+/**
+ * @brief  Full bootloader hardware teardown before jumping to the application.
+ *         Explicitly shuts down all initialized peripherals and DMA streams,
+ *         then force-resets every peripheral bus via RCC reset registers to
+ *         return the MCU to its raw, power-on hardware defaults.
+ */
+void bsp_deinit(void) {
+    /* 1. Deinitialize all HAL peripheral handles initialized in main() */
+    HAL_UART_DeInit(&huart1);
+    HAL_UART_DeInit(&huart2);
+    HAL_SPI_DeInit(&hspi1);
+    HAL_SPI_DeInit(&hspi2);
+    HAL_I2C_DeInit(&hi2c1);
+    HAL_CAN_DeInit(&hcan2);
+    HAL_TIM_Base_DeInit(&htim3);
+    HAL_CRC_DeInit(&hcrc);
+    HAL_RNG_DeInit(&hrng);
+
+    /* 2. Explicitly stop and deinitialize all DMA streams used by UARTs/TIM3 */
+    HAL_DMA_DeInit(&hdma_usart1_rx);
+    HAL_DMA_DeInit(&hdma_usart1_tx);
+    HAL_DMA_DeInit(&hdma_usart2_rx);
+    HAL_DMA_DeInit(&hdma_usart2_tx);
+    HAL_DMA_DeInit(&hdma_tim3_ch1_trig);
+
+    /* 3. Force hardware-level reset on all internal buses using RCC reset registers
+          (AHB3 covers the FSMC used for the FRAM bus) */
+    RCC->AHB1RSTR = 0xFFFFFFFFU;
+    RCC->AHB2RSTR = 0xFFFFFFFFU;
+    RCC->AHB3RSTR = 0xFFFFFFFFU;
+    RCC->APB1RSTR = 0xFFFFFFFFU;
+    RCC->APB2RSTR = 0xFFFFFFFFU;
+
+    /* Release all peripheral resets so the application can initialize them */
+    RCC->AHB1RSTR = 0x00000000U;
+    RCC->AHB2RSTR = 0x00000000U;
+    RCC->AHB3RSTR = 0x00000000U;
+    RCC->APB1RSTR = 0x00000000U;
+    RCC->APB2RSTR = 0x00000000U;
+
+    /* 4. Final core-level HAL teardown, restore RCC clock configuration to HSI */
+    HAL_RCC_DeInit();
+    HAL_DeInit();
+}
+
+/**
+ * @brief  Performs a safe, clean jump to the main application.
+ *         Completely deinitializes the RTOS, SysTick and HAL peripherals
+ *         before jumping.
+ * @param  addr: target application start address (sector 5: 0x08020000)
+ */
 void jump_main_application(uint32_t addr) {
     void (*Jump_To_Application)(void);
     uint32_t JumpAddress;
 
-    // Читаем значение Stack Pointer из начала прошивки
-        uint32_t stack_pointer = *(__IO uint32_t*)addr;
+    /* 1. Read the initial Stack Pointer value from the target firmware image */
+    uint32_t stack_pointer = *(__IO uint32_t*)addr;
 
-        // Проверяем, что стек лежит в SRAM (0x20xxxxxx) или в CCMRAM (0x10xxxxxx)
-        if (((stack_pointer & 0xFF000000) == 0x20000000) ||
-            ((stack_pointer & 0xFF000000) == 0x10000000)) {
+    /* 2. Validate that the stack pointer lies in this MCU's RAM:
+          SRAM 0x20000000..0x20020000 (128 KB) or CCMRAM 0x10000000..0x10010000 (64 KB) */
+    if (((stack_pointer >= 0x20000000U) && (stack_pointer <= 0x20020000U)) ||
+        ((stack_pointer >= 0x10000000U) && (stack_pointer <= 0x10010000U))) {
 
-        // ПРОШИВКА ЕСТЬ! Теперь можно безопасно "ломать" среду бутлоадера.
+        /* VALID FIRMWARE DETECTED! Proceed to safe bootloader teardown */
 
-        // 2. Останавливаем планировщик RTOS
+        /* 3. CRITICAL: disable all CPU interrupts globally FIRST to prevent
+              ISR execution while hardware is being deinitialized */
+        __disable_irq();
+
+        /* Lock the RTOS kernel scheduler to stop task switching */
         osKernelLock();
 
-        // 3. Сбрасываем всю периферию STM32
-        HAL_RCC_DeInit();
-        HAL_DeInit();
-
-        // 4. ЖЕСТКО выключаем SysTick
+        /* Hard-disable the SysTick timer and clear its registers */
         SysTick->CTRL = 0;
         SysTick->LOAD = 0;
         SysTick->VAL  = 0;
 
-        // 5. Запрещаем все прерывания ядра перед прыжком
-        __disable_irq();
+        /* Deep-clean and deinitialize all hardware peripherals to raw reset states */
+        bsp_deinit();
 
-        // 6. Вычисляем адрес прыжка
-        JumpAddress = *(__IO uint32_t*) (addr + 4);
-        Jump_To_Application = (void (*)(void)) JumpAddress;
+        /* 4. CRITICAL: disable and clear all pending interrupts in the NVIC so
+              the application cannot take a stale bootloader interrupt */
+        for (uint8_t i = 0; i < 8; i++) {
+            NVIC->ICER[i] = 0xFFFFFFFFU; /* Disable all interrupts */
+            NVIC->ICPR[i] = 0xFFFFFFFFU; /* Clear all pending flags */
+        }
 
-        // 7. Устанавливаем Main Stack Pointer (MSP) для новой прошивки
-        __set_MSP(*(__IO uint32_t*) addr);
+        /* 5. Disable and invalidate the ART instruction/data caches: the
+              application starts with an empty cache and re-enables them */
+        __HAL_FLASH_INSTRUCTION_CACHE_DISABLE();
+        __HAL_FLASH_DATA_CACHE_DISABLE();
+        __HAL_FLASH_INSTRUCTION_CACHE_RESET();
+        __HAL_FLASH_DATA_CACHE_RESET();
 
-        // 8. Прыжок веры! (Отсюда возврата нет)
+        /* 6. Switch Thread mode stack from PSP (used by FreeRTOS task) back to MSP */
+        __set_CONTROL(0);
+
+        /* Set the Main Stack Pointer (MSP) for the new application */
+        __set_MSP(stack_pointer);
+
+        /* 7. Data and instruction synchronization barriers */
+        __DSB();
+        __ISB();
+
+        /* Relocate the vector table to the target application base address */
+        SCB->VTOR = addr;
+
+        /* Extract the reset handler address (stored at App base + 4) */
+        JumpAddress = *(__IO uint32_t*)(addr + 4);
+        Jump_To_Application = (void (*)(void))JumpAddress;
+
+        /* Execute the jump (no return from this point) */
         Jump_To_Application();
     }
     else {
-        // ПРОШИВКИ НЕТ! (или память стерта)
-        // Мы попадаем сюда, и при этом мы ничего не сломали.
-        // RTOS работает, прерывания включены, HAL активен.
-
-        // Здесь можно безопасно обработать ошибку:
-        // - Запустить мигание красным светодиодом ошибки
-        // - Выдать строку "No App!" в UART
-        // - Запустить USB/UART загрузчик (XMODEM/YMODEM) для приема файла
+        /* NO VALID FIRMWARE DETECTED! (or flash memory is completely erased)
+           Nothing was broken: the RTOS, interrupts and HAL remain active.
+           Error handling placeholder (LED warning pattern, "No App!" on UART, etc.) */
     }
 }
 
 
-/********************************* Точная us задержка *********************************************/
-// Инициализация DWT
+/* ========================================================================= */
+/*  DWT DELAY HARDWARE CONTROL                                               */
+/* ========================================================================= */
+
+/**
+ * @brief  Initializes the Data Watchpoint and Trace (DWT) cycle counter.
+ */
 void DWT_Init(void) {
+    /* Trace block must be clocked before its registers accept writes */
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
 
-    // Разблокировка доступа к DWT (актуально для старших ядер Cortex-M)
-    // Разкомментируйте, если компилятор знает регистр LAR:
-    // DWT->LAR = 0xC5ACCE55;
+    /* DWT->LAR (0xE0001FB0): already unlocked on STM32F4 (Cortex-M4, same
+       core as F411), the write is ignored here but keeps the code safe for
+       M7 parts where the unlock is mandatory. */
+    volatile uint32_t *dwt_lar = (volatile uint32_t *)0xE0001FB0U;
+    *dwt_lar = 0xC5ACCE55U;
 
     DWT->CYCCNT = 0;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 }
 
-// Деинициализация DWT
+/**
+ * @brief  Deinitializes the DWT cycle counter.
+ */
 void DWT_DeInit(void) {
     DWT->CTRL &= ~DWT_CTRL_CYCCNTENA_Msk;
     DWT->CYCCNT = 0;
     CoreDebug->DEMCR &= ~CoreDebug_DEMCR_TRCENA_Msk;
 }
 
-// Микросекундная блокирующая задержка
-void delay_us(uint32_t us) {
-    // Вычисляем, сколько тактов процессора нужно прождать
-    uint32_t ticks_needed = us * (SystemCoreClock / 1000000U);
+/**
+ * @brief  Performs microsecond blocking delay.
+ *         Uses SystemCoreClock, so it is correct at any F415 frequency.
+ */
+void delay_us(const uint32_t us) {
+    const uint32_t ticks_needed = us * (SystemCoreClock / 1000000U);
+    const uint32_t tick_start = DWT->CYCCNT;
 
-    // Фиксируем стартовое значение счетчика
-    uint32_t tick_start = DWT->CYCCNT;
-
-    // Ждем, пока разница не достигнет нужного количества тактов.
-    // Переполнение uint32_t обрабатывается аппаратно и безопасно!
+    /* Wrap-safe subtraction: uint32_t overflow is handled by the math itself */
     while ((DWT->CYCCNT - tick_start) < ticks_needed) {
-        __NOP(); // Опционально: пустая инструкция, чтобы не сводить с ума отладчик
+        /* Busy wait */
     }
 }
 

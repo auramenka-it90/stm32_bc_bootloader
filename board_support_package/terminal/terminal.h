@@ -5,7 +5,7 @@
 
 
 // terminal.h
-#define 	_TERMINAL_TIMEOUT_MS_       		5000        // Тайм-аут 5 секунд
+#define 	_TERMINAL_TIMEOUT_MS_       		5000        // 5 second timeout
 #define		_TERMINAL_PERMISSION_JUMP_APPL_		1
 
 #define		_TERMINAL_PERMISSION_WRAPPER_
@@ -27,9 +27,9 @@
 
 //	memory identifiers
 #define		_ID_FPGA_FLASH			0x00
-#define		_ID_CPU_MEMORY			0x01		// ДОБАВЛЕНО: ID внутренней памяти CPU
-#define		_ID_FRAM_RECORDER		0x02		// ID самописца во FRAM (TERMINAL_ID_FRAM_RECORDER)
-#define		_ID_DEV_NUM				3			// ИЗМЕНЕНО: теперь у нас3 устройства
+#define		_ID_CPU_MEMORY			0x01		// ADDED: CPU internal memory ID
+#define		_ID_FRAM_RECORDER		0x02		// FRAM recorder ID in FRAM (TERMINAL_ID_FRAM_RECORDER)
+#define		_ID_DEV_NUM				3			// CHANGED: now we have 3 devices
 
 /*
  *		eAssist max = 1024 !!!!!

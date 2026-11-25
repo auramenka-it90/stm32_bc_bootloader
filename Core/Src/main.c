@@ -32,7 +32,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "board_support_package.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -76,7 +76,8 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+	/* Capture reset cause before HAL_Init or RCC configuration clears it */
+	soft_reset = get_rcc_csr();
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/

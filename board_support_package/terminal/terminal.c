@@ -65,32 +65,32 @@ Dev_descriptor_t dev_descr_arr[_ID_DEV_NUM] =
 		W25Q16_TIMEOUT_CHIP_WRITE_S,
 		W25Q16_TIMEOUT_CHIP_ERASE_S,
 		//dtrue,
-		dfalse, /* MUST HAVE иначе слетить связь с терминалом !!! */
+		dfalse, /* MUST HAVE otherwise the terminal link drops !!! */
 		0,
 		0
 	},
 	{
-	//	Внутренняя память CPU (ДОБАВЛЕНО)
+	//	CPU internal memory (ADDED)
 		"DD11-STM32F415ZGTX/ID=",
 		FLASH_CPU_PAGE_SIZE,     // 1024
 		FLASH_CPU_PAGE_SIZE,     // 1024
-		FLASH_CPU_SIZE,          // Задается в application.h
+		FLASH_CPU_SIZE,          // defined in application.h
 		2,                       // Timeout write (sec)
-		6,                       // Timeout erase (sec) - увеличено для секторов
+		6,                       // Timeout erase (sec) - increased for sectors
 		dfalse,
 		FLASH_CPU_START_ADDRESS,
 		FLASH_CPU_START_ADDRESS
 	},
 	{
-//	[2] FRAM Самописец (_ID_FRAM_RECORDER = 0x02)
+//	[2] FRAM recorder (_ID_FRAM_RECORDER = 0x02)
 		"DD17-FM22L16/ID=",
-		FRAM_RECORDER_BLOCK_SIZE, // Передаем 1024 байта при записи
-		FRAM_RECORDER_BLOCK_SIZE, // Передаем 1024 байта при чтении
-		FRAM_RECORDER_SIZE_BYTES, // 65536
+		FRAM_RECORDER_BLOCK_SIZE, // transfer 1024 bytes on write
+		FRAM_RECORDER_BLOCK_SIZE, // transfer 1024 bytes on read
+		FRAM_RECORDER_SIZE_BYTES, // 512 kB (256 kWords)
 		2,
 		2,
 		dfalse,
-		FRAM_RECORDER_START_ADDRESS, // Указываем реальный адрес: 0x38000
+		FRAM_RECORDER_START_ADDRESS, // word address 0x00000, start of the FRAM array
 		FRAM_RECORDER_START_ADDRESS
 	}
 };
@@ -190,12 +190,28 @@ void terminal_task(void) {
 	}
 
 
-	// Если время вышло И нет команды "оставаться здесь" -> прыгаем в приложение
-	static uint32_t tick_old = 0;
-	if (((osKernelGetTickCount() - tick_old) > _TERMINAL_TIMEOUT_MS_) && !fl_stay_here) {
+	/* Handle bootloader timeout and conditional jump */
+	static uint32_t tick_start = 0;
+	if (tick_start == 0) {
+		tick_start = osKernelGetTickCount();
+	}
+
+	/* Calculate dynamic timeout based on reset cause */
+	uint32_t boot_timeout = _TERMINAL_TIMEOUT_MS_;
+
+#if (_BHV_FAST_JUMP_ == 1)
+	/* If this is a cold boot (Hard Reset), bypass the delay and jump immediately */
+	if (!soft_reset) {
+		boot_timeout = 0;
+	}
+#endif
+
+	/* Timeout expired AND no "stay here" command -> jump to the application */
+	if (((osKernelGetTickCount() - tick_start) >= boot_timeout) && !fl_stay_here) {
 #ifdef	_TERMINAL_PERMISSION_JUMP_APPL_
+		/* Latch the timeout expiry so this block is never entered again */
 		fl_stay_here=	true;
-		// Проверяем: если прошивка живая - прыгаем
+		/* Check: if the firmware image is alive - jump */
 		if (check_application() == true) {
 			jump_main_application(APPLICATION_ADDRESS);
 		}
@@ -293,12 +309,12 @@ static du32 prg_ReadId(const du8 dev_num) {
 		break;
 	}
 	case _ID_CPU_MEMORY: {
-		t = HAL_GetDEVID(); // Чтение ID контроллера STM32
+		t = HAL_GetDEVID(); // read STM32 controller ID
 		break;
 	}
 	case _ID_FRAM_RECORDER: {
-		// Параллельная FRAM не имеет простого регистра ID.
-		// Возвращаем фиксированную "магическую" константу 0x2216 для терминала.
+		// Parallel FRAM has no simple ID register.
+		// Return a fixed "magic" constant 0x2216 for the terminal.
 		t = 0x2216;
 		break;
 	}
@@ -326,18 +342,18 @@ static dboolean prg_Read(const du8 dev_num, du8 *const pusData,	const du32 ulSta
 			uint32_t block_bytes = dev_descr_arr[_ID_FRAM_RECORDER].cnt_rd_block;
 			uint32_t words_to_read = block_bytes / 2;
 
-			// 1. Вычисляем смещение в БАЙТАХ от начала блока (0, 1024, 2048...)
+			// 1. Compute the offset in BYTES from the start of the block (0, 1024, 2048...)
 			uint32_t byte_offset = ulStartAddress - FRAM_RECORDER_START_ADDRESS;
 
-			// 2. Переводим байтовое смещение в словное (/ 2) и прибавляем к стартовому адресу FSMC
+			// 2. Convert the byte offset to a word offset (/ 2) and add it to the FSMC start address
 			uint32_t current_word_addr = FRAM_RECORDER_START_ADDRESS + (byte_offset / 2);
 
-			// Защита от выхода за пределы физической памяти FRAM
+			// Guard against running past the end of the physical FRAM
 			if ((current_word_addr + words_to_read) > (FRAM_RECORDER_END_ADDRESS + 1)) {
 				words_to_read = (FRAM_RECORDER_END_ADDRESS + 1) - current_word_addr;
 			}
 
-			// Читаем правильный блок по правильному адресу!
+			// Read the correct block at the correct address!
 			if (fsmc_read_buffer(FSMC_DEV_FRAM, current_word_addr, (uint16_t*)pusData, words_to_read) == FSMC_OK) {
 				result = dtrue;
 			}
@@ -368,7 +384,7 @@ static dboolean prg_Erase(const du8 dev_num) {
 		break;
 	}
 	case _ID_CPU_MEMORY: {
-	    // Умное групповое стирание всех секторов приложения за один вызов
+	    // Smart bulk erase of all application sectors in a single call
 	    result = eeprom_memory_erase_app();
 	    break;
 	}
@@ -393,13 +409,13 @@ static dboolean prg_Write(const du8 dev_num, du8 *const pusData,	const du32 ulSt
 	}
 	case _ID_CPU_MEMORY: {
 		uint32_t bytes_to_write = dev_descr_arr[_ID_CPU_MEMORY].cnt_wr_block;
-		uint32_t words_to_write = bytes_to_write >> 2; // байты -> слова
+		uint32_t words_to_write = bytes_to_write >> 2; // bytes -> words
 		result = eeprom_memory_write_words((uint32_t*)pusData, ulStartAddress, words_to_write);
 		break;
 	}
 	case _ID_FRAM_RECORDER: {
-		// Блокируем запись со стороны терминала!
-		// Возвращаем 0, чтобы программа на ПК поняла, что данные не записаны.
+		// Writing from the terminal side is blocked!
+		// Return false so the PC tool knows the data was not written.
 		result = dfalse;
 		break;
 	}
@@ -422,7 +438,7 @@ static void prg_Reset(const du8 dev_num) {
 		break;
 	}
 	case _ID_CPU_MEMORY: {
-		// Ничего специфичного сбрасывать не нужно
+		// nothing specific to reset here
 		break;
 	}
 	default:	break;
@@ -438,7 +454,7 @@ static dboolean prg_Finish(const du8 dev_num) {
 	case _ID_FPGA_FLASH: {
 		set_state_led(LED_STATE_RG_OFF);
 		SPI_Bus_Release_To_FPGA();
-/*		FPGA_Reset();					обязательно !!!!	*/
+/*		FPGA_Reset() is mandatory !!!!	*/
 		result=	true;
 		break;
 	}

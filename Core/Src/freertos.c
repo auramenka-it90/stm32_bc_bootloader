@@ -41,7 +41,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+/* Synchronization flag to start tasks after hardware initialization */
+#define TASK_START_FLAG 0x01U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -51,27 +52,30 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-
+/* Low level sensor data cache, read by terminal signals */
+float current_temp;
+AM1805_Time_t current_time;
+char data_time_string[32];
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 512 * 4,
+  .stack_size = 1024 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for LowLevelTask */
 osThreadId_t LowLevelTaskHandle;
 const osThreadAttr_t LowLevelTask_attributes = {
   .name = "LowLevelTask",
-  .stack_size = 512 * 4,
+  .stack_size = 1024 * 4,
   .priority = (osPriority_t) osPriorityLow1,
 };
 /* Definitions for TerminalTask */
 osThreadId_t TerminalTaskHandle;
 const osThreadAttr_t TerminalTask_attributes = {
   .name = "TerminalTask",
-  .stack_size = 512 * 4,
+  .stack_size = 1024 * 4,
   .priority = (osPriority_t) osPriorityLow7,
 };
 
@@ -139,28 +143,27 @@ void MX_FREERTOS_Init(void) {
   * @retval None
   */
 /* USER CODE END Header_StartDefaultTask */
-void StartDefaultTask(void *argument)
-{
+void StartDefaultTask(void *argument) {
   /* USER CODE BEGIN StartDefaultTask */
 
-	osThreadSuspend(LowLevelTaskHandle);
-	osThreadSuspend(TerminalTaskHandle);
+    /* Run board-level POST and hardware initialization */
+    /* Any delays (osDelay) inside this function are now completely safe */
+    init_hardware();
 
-	init_hardware();
+    /* Cascade start tasks based on POST diagnostic results using Thread Flags */
+    if (test_status_hardware(_B_FAULT_TERMINAL_)) {
+        osThreadFlagsSet(TerminalTaskHandle, TASK_START_FLAG);
+    }
 
-	if (test_status_hardware(_B_FAULT_TERMINAL_)) {
-		osThreadResume(TerminalTaskHandle);
-	}
+    if (test_status_hardware(_B_FAULT_AM1805_ | _B_FAULT_DS1621_)) {
+        osThreadFlagsSet(LowLevelTaskHandle, TASK_START_FLAG);
+    }
 
-	if (test_status_hardware(_B_FAULT_AM1805_ | _B_FAULT_DS1621_)){
-		osThreadResume(LowLevelTaskHandle);
-	}
-
-	for (;;) {
-
-		PIN_Toggle_S(&pin_tp0);
-		osDelay(10);
-	}
+    /* Monitor heartbeat: direct fast port toggle on Test Point 0 (no mutex overhead) */
+    for (;;) {
+        PIN_Toggle_F(&pin_tp0);
+        osDelay(10);
+    }
   /* USER CODE END StartDefaultTask */
 }
 
@@ -171,26 +174,25 @@ void StartDefaultTask(void *argument)
 * @retval None
 */
 
-float current_temp;
-AM1805_Time_t current_time;
-char data_time_string[32];          // Буфер для строки "HH:MM:SS [XT]"
-
 /* USER CODE END Header_StartLowLevelTask */
-void StartLowLevelTask(void *argument)
-{
+void StartLowLevelTask(void *argument) {
   /* USER CODE BEGIN StartLowLevelTask */
-	/* Infinite loop */
-	for (;;) {
 
-		// 4. Update current temperature
-		current_temp = DS1621_GetLastTemperature();
+  /* Wait for the flag from the monitor task. The task sleeps and consumes no CPU. */
+  osThreadFlagsWait(TASK_START_FLAG, osFlagsWaitAny, osWaitForever);
 
-		if (AM1805_GetTime(&current_time) == AM1805_OK) {
-			AM1805_FormatFullDateTime(data_time_string, sizeof(data_time_string),	&current_time);
-		}
+  /* Infinite loop */
+  for (;;) {
+    /* Update current temperature (DS1621 driver keeps its own cache) */
+    current_temp = DS1621_GetLastTemperature();
 
-		osDelay(100);
-	}
+    /* Update RTC date/time string */
+    if (AM1805_GetTime(&current_time) == AM1805_OK) {
+        AM1805_FormatFullDateTime(data_time_string, sizeof(data_time_string), &current_time);
+    }
+
+    osDelay(100);
+  }
   /* USER CODE END StartLowLevelTask */
 }
 
@@ -201,14 +203,16 @@ void StartLowLevelTask(void *argument)
 * @retval None
 */
 /* USER CODE END Header_StartTerminalTask */
-void StartTerminalTask(void *argument)
-{
+void StartTerminalTask(void *argument) {
   /* USER CODE BEGIN StartTerminalTask */
-	/* Infinite loop */
-	for (;;) {
-		terminal_task();
 
-	}
+  /* Wait for the flag from the monitor task. The task sleeps and consumes no CPU. */
+  osThreadFlagsWait(TASK_START_FLAG, osFlagsWaitAny, osWaitForever);
+
+  /* Infinite loop */
+  for (;;) {
+    terminal_task();
+  }
   /* USER CODE END StartTerminalTask */
 }
 

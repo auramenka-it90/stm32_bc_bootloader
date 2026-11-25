@@ -1,22 +1,23 @@
 #include "fm22l16.h"
+#include "fram_locker.h"
 
-/* Запись 32-бит данных (2 слова по 16 бит) */
+/* Write 32-bit data (two 16-bit words) */
 FSMC_Status_t fm22_write_union(uint32_t addr, t_float_uint data) {
     return fsmc_write_buffer(FSMC_DEV_FRAM, addr, data.u16, 2);
 }
 
-/* Чтение 32-бит данных */
+/* Read 32-bit data */
 FSMC_Status_t fm22_read_union(uint32_t addr, t_float_uint *data) {
     if (!data) return FSMC_ERROR;
     return fsmc_read_buffer(FSMC_DEV_FRAM, addr, data->u16, 2);
 }
 
-/* Программная блокировка/разблокировка секторов (Sequence Detector) */
+/* Software sector protection (Sequence Detector) */
 FSMC_Status_t fm22_set_protection(uint8_t sector_mask) {
     uint16_t dummy;
     if (fsmc_lock() != FSMC_OK) return FSMC_TIMEOUT;
 
-    /* 6 специфических чтений */
+    /* 6 specific reads */
     dummy = fsmc_read_fast(FSMC_DEV_FRAM, 0x24555);
     dummy = fsmc_read_fast(FSMC_DEV_FRAM, 0x3AAAA);
     dummy = fsmc_read_fast(FSMC_DEV_FRAM, 0x02333);
@@ -25,21 +26,24 @@ FSMC_Status_t fm22_set_protection(uint8_t sector_mask) {
     dummy = fsmc_read_fast(FSMC_DEV_FRAM, 0x3EF00);
     (void)dummy;
 
-    /* 3 специфических записи */
+    /* 3 specific writes */
     fsmc_write_fast(FSMC_DEV_FRAM, 0x3AAAA, (uint16_t)sector_mask);
     fsmc_write_fast(FSMC_DEV_FRAM, 0x1CCCC, (uint16_t)~sector_mask);
     fsmc_write_fast(FSMC_DEV_FRAM, 0x0FF00, 0x0000);
 
-    /* Завершающее чтение */
+    /* Closing read */
     fsmc_read_fast(FSMC_DEV_FRAM, 0x00000);
 
     fsmc_unlock();
     return FSMC_OK;
 }
 
-/* Быстрый тест 3-х точек (начало, середина, конец) с сохранением данных */
+/* Fast 3-point test (start, middle, end) with data restore */
 FSMC_Status_t fm22_test_quick(void) {
-    uint32_t pts[] = {0, FM22_MAX_ADDR / 2, FM22_MAX_ADDR};
+    /* Last point is kept below the locker block (FRAM_LOCKER_ADDR..FM22_MAX_ADDR):
+       writing test patterns into the locker CRC word would reset the
+       anti-tamper counter if power fails between pattern write and restore */
+    uint32_t pts[] = {0, FM22_MAX_ADDR / 2, FRAM_LOCKER_ADDR - 1};
     uint16_t orig, pattern = 0xAA55;
     FSMC_Status_t status = FSMC_OK;
 
@@ -54,7 +58,7 @@ FSMC_Status_t fm22_test_quick(void) {
         fsmc_write_fast(FSMC_DEV_FRAM, pts[i], (uint16_t)~pattern);
         if (fsmc_read_fast(FSMC_DEV_FRAM, pts[i]) != (uint16_t)~pattern) status = FSMC_ERROR;
 
-        fsmc_write_fast(FSMC_DEV_FRAM, pts[i], orig); // Восстановление
+        fsmc_write_fast(FSMC_DEV_FRAM, pts[i], orig); // restore
         if (status != FSMC_OK) break;
     }
 
@@ -62,11 +66,11 @@ FSMC_Status_t fm22_test_quick(void) {
     return status;
 }
 
-/* Полный тест всей памяти (проверка уникальности адресов и каждого бита) */
+/* Full memory test (address uniqueness and per-bit check) */
 FSMC_Status_t fm22_test_full(void) {
     if (fsmc_lock() != FSMC_OK) return FSMC_TIMEOUT;
 
-    /* Запись собственного адреса в каждую ячейку */
+    /* Write own address into every cell */
     for (uint32_t i = 0; i <= FM22_MAX_ADDR; i++) {
         fsmc_write_fast(FSMC_DEV_FRAM, i, (uint16_t)i);
     }
@@ -76,7 +80,7 @@ FSMC_Status_t fm22_test_full(void) {
         }
     }
 
-    /* Запись инверсного адреса */
+    /* Write inverted address */
     for (uint32_t i = 0; i <= FM22_MAX_ADDR; i++) {
         fsmc_write_fast(FSMC_DEV_FRAM, i, (uint16_t)~i);
     }

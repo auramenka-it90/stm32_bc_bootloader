@@ -22,8 +22,7 @@ static char device_info[_VC_SIZE_DEVICE_INFO_STR_];
  * @param password Session password appended in "0xABCDEF12" hex format
  * @return Pointer to the static device info string
  */
-char* device_info_create(uint32_t password)
-{
+char* device_info_create(uint32_t password) {
     static const char hex_digits[] = "0123456789ABCDEF";
     const char *src = device_info_string;
     char *p = device_info;
@@ -54,7 +53,6 @@ char* device_info_create(uint32_t password)
 /**
  * Destroy device info string (clears the static buffer)
  */
-void device_info_destroy(void)
-{
+void device_info_destroy(void) {
     device_info[0] = '\0';
 }
