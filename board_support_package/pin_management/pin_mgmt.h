@@ -81,6 +81,10 @@ osStatus_t SPI_Bus_Release_To_FPGA(void);
 osStatus_t FPGA_System_Restart(uint32_t timeout_ms);
 void	FPGA_Reset(void);
 
+/* Reads PE4 = CP2102 SUSPEND (via ADuM1201, active-high): 1 = USB host active */
+uint8_t CP2102_Is_Active(void);
+
+/* Reads PB7 = STLINK_GND (input pull-up): 1 = STLINK debugger attached */
 uint8_t STLINK_Is_Connected(void);
 
 #endif /* __PIN_MGMT_H */

@@ -35,6 +35,7 @@ static	bool run_set_correction= false;
 static	float  	ppm_rtc= 0;
 static  bool reset_1805= false;
 uint32_t temp_password=	0xFFFFFFFF;
+bool stlink_attached = false;
 
 SIGNALS_BEGIN(DSPA_SIGNALS_NAME)
 	_STRING_R_  ("Ballistic computer(bootloader)", sDEV, NULL),
@@ -61,6 +62,7 @@ SIGNALS_BEGIN(DSPA_SIGNALS_NAME)
 				_BOOL_RW_("set correction",run_set_correction, &sTIME_CORRECTION),
 				_BOOL_RW_("be careful!forced hard reset of the AM1805",reset_1805, &sTIME_CORRECTION),
 		_STRING_R_ ("System info", sLOCK, &sDEV),
+			_BOOL_R_ ("STLINK connected", stlink_attached, &sLOCK),
 			_U32_RW_("magic",	temp_password, &sLOCK),
 			_U32_RW_("current counter",FRAM_LOCKER_COUNTER, &sLOCK),
 			_U32_RW_("threshold",FRAM_LOCKER_THRESHOLD, &sLOCK)

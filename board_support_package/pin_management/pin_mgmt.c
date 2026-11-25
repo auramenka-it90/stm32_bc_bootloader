@@ -153,11 +153,23 @@ uint8_t PIN_Read_S(const Pin_Descriptor_t* desc) {
 
 
 /**
-  * @brief  Check if ST-Link is connected
+  * @brief  Check if the isolated USB terminal interface is active.
+  *         Reads PE4 = CP2102 SUSPEND output routed through ADuM1201.
+  *         CP2102 SUSPEND is active-high (1 = USB suspended / no host),
+  *         so a LOW level means USB host is present and awake.
+  * @retval 1 - USB host active (terminal on USART1/CP2102 path),
+  *         0 - no USB host (terminal path defaults to USART2/ADM3491 bus).
   */
-uint8_t STLINK_Is_Connected(void)
+uint8_t CP2102_Is_Active(void)
 {
     return (PIN_Read(&pin_w_up_uart) == 0) ? 1 : 0;
+}
+
+/* Reads PB7 = STLINK_GND, input pull-up: STLINK clips the line to GND,
+   so a LOW level means the debugger is attached. */
+uint8_t STLINK_Is_Connected(void)
+{
+    return (PIN_Read(&pin_stlink_gnd) == 0) ? 1 : 0;
 }
 
 

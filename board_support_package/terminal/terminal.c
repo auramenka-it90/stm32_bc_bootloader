@@ -138,7 +138,7 @@ bool terminal_init(void) {
 
 	/*	 uart initialization	*/
 
-	if 	(STLINK_Is_Connected()){
+	if 	(CP2102_Is_Active()){
 		set_state_led(LED_STATE_BLINK_WHITE);
 		uctrl.huart = &huart1;
 		uctrl.dma_handle_rx = &hdma_usart1_rx;
@@ -154,6 +154,9 @@ bool terminal_init(void) {
 	uctrl.rx_buf_size = _TERMINAL_RX_BUFF_SIZE_;
 	uctrl.tx_buf_size = _TERMINAL_TX_BUFF_SIZE_;
 	com_init(&uctrl);
+
+	/* One-shot STLINK presence snapshot at startup (PB7) */
+	stlink_attached = (STLINK_Is_Connected() == 1) ? true : false;
 
 #ifdef	_TERMINAL_PERMISSION_WRAPPER_
 	wrp_init(&uctrl, _TERMINAL_WRAPPER_ADDRESS_, _TERMINAL_WRAPPER_ALT_ADDRESS_,
@@ -411,7 +414,7 @@ static void prg_Reset(const du8 dev_num) {
 	switch (dev_num) {
 	case _ID_FPGA_FLASH: {
 		SPI_Bus_Release_To_FPGA();
-		if (STLINK_Is_Connected()){
+		if (CP2102_Is_Active()){
 			FPGA_Reset();
 		}else{
 			osDelay(10);

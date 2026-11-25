@@ -24,6 +24,9 @@ extern	char data_time_string[];
 
 //	ds1621+
 extern	float current_temp;
+
+// STLINK debugger presence on PB7, refreshed each terminal tick
+extern bool stlink_attached;
 /*
 
 
