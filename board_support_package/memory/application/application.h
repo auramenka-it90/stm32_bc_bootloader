@@ -12,44 +12,47 @@ typedef struct {
 } fw_header_t;
 
 
-// Адрес 5-го сектора Flash-памяти (Начало пользовательского приложения)
+/* Application start: flash sector 5 */
 #define APPLICATION_ADDRESS         0x08020000
 
-// 128 kB (Размер одного сектора: с 5 по 11 на STM32F4)
-#define FLASH_CPU_SECTOR_SIZE       (128 * 1024)
 #define FLASH_CPU_START_ADDRESS     APPLICATION_ADDRESS 
 #define FLASH_CPU_ADR               FLASH_CPU_START_ADDRESS
 
-// --- НАСТРОЙКА РАЗМЕРА ПРОГРАММЫ ---
-// Выделяем 2 сектора под боевую программу (Сектор 5 и Сектор 6) = 256 КБ
-#define FLASH_CPU_SECTORS_COUNT     2
+/* --- APPLICATION REGION SIZE --- */
+/* Individual flash sector sizes (STM32F415: S0..S3 16K, S4 64K, S5 128K, S6..S11 64K).
+   Sectors 5, 6 and 7 form the application region */
+#define FLASH_CPU_SECTOR5_SIZE      (128 * 1024)
+#define FLASH_CPU_SECTOR6_SIZE      (64 * 1024)
+#define FLASH_CPU_SECTOR7_SIZE      (64 * 1024)
 
-// Размер страницы обмена DSPA (1024 байта)
+#define FLASH_CPU_SECTORS_COUNT     3
+
+/* DSPA exchange page size (1024 bytes) */
 #define FLASH_CPU_PAGE_SIZE         1024
 
-// Вычисляемый общий размер выделенной памяти (262144 байт)
-#define FLASH_CPU_SIZE              (FLASH_CPU_SECTOR_SIZE * FLASH_CPU_SECTORS_COUNT) 
+/* Total application region, summed from the real (unequal) sector sizes */
+#define FLASH_CPU_SIZE              (FLASH_CPU_SECTOR5_SIZE + FLASH_CPU_SECTOR6_SIZE + FLASH_CPU_SECTOR7_SIZE)
 
-// Вычисляемый конечный адрес: 0x08020000 + 0x40000 - 1 = 0x0805FFFF
+/* End address: 0x08020000 + 0x40000 - 1 = 0x0805FFFF */
 #define FLASH_CPU_ADR_HIGH          (FLASH_CPU_START_ADDRESS + FLASH_CPU_SIZE - 1)
 
 #define CLEAR_FLAG                  __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR | FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR | FLASH_FLAG_PGSERR)
 
-// Стартовый и конечный сектора для драйвера очистки (Erase)
+/* Start and end sectors for the erase driver */
 #define APPL_SECTOR_START           FLASH_SECTOR_5
-#define APPL_SECTOR_END             FLASH_SECTOR_6
+#define APPL_SECTOR_END             FLASH_SECTOR_7
 
-// Прототипы функций драйвера
+/* Driver function prototypes */
 void eeprom_memory_read_buffer(uint8_t *dst, const uint8_t *src, uint32_t len);
 
-// Функция стирания теперь не принимает номер сектора, а стирает всю выделенную область приложения
+/* Erase function takes no sector number: it erases the whole application region */
 bool eeprom_memory_erase_app(void);
 bool eeprom_memory_write_words(const uint32_t *p_data, uint32_t addr, uint32_t words_count);
 
 /**
- * @brief Проверяет наличие прошивки и валидность её CRC32.
- * @return true, если прошивка валидна и можно делать jump.
- * @return false, если прошивки нет, или CRC не совпадает.
+ * @brief Checks that the firmware image is present and its CRC32 is valid.
+ * @return true if the firmware is valid and jump can be performed.
+ * @return false if there is no firmware or the CRC does not match.
  */
 bool check_application(void);
 

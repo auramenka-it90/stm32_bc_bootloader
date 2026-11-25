@@ -2,73 +2,73 @@
 #include <string.h>
 
 /*
- * Чтение из внутренней Flash-памяти
- * Выполняется с максимальной скоростью системной шины
+ * Read from internal Flash memory.
+ * Executes at the maximum speed of the system bus.
  */
 void eeprom_memory_read_buffer(uint8_t *dst, const uint8_t *src, uint32_t len) {
     memcpy(dst, src, len);
 }
 
 /*
- * Стирание всей пользовательской области Flash-памяти (Сектора приложения).
- * Берет настройки APPL_SECTOR_START и FLASH_CPU_SECTORS_COUNT из application.h.
- * Внимание: Процесс стирания может занимать до 2-4 секунд.
- * Во время стирания выполнение кода из Flash аппаратно приостанавливается.
+ * Erase the whole application Flash region (application sectors).
+ * Uses APPL_SECTOR_START and FLASH_CPU_SECTORS_COUNT from application.h.
+ * Warning: the erase process can take up to 2-4 seconds.
+ * During erase, code execution from internal Flash is hardware-suspended.
  */
 bool eeprom_memory_erase_app(void) {
     FLASH_EraseInitTypeDef EraseInitStruct;
     uint32_t SectorError = 0;
     bool result = true;
 
-    // Настройка параметров стирания на диапазон секторов
+    /* Configure erase parameters for the range of sectors */
     EraseInitStruct.TypeErase     = FLASH_TYPEERASE_SECTORS;
-    EraseInitStruct.VoltageRange  = FLASH_VOLTAGE_RANGE_3; // Требует питания 2.7-3.6V для быстрой работы
+    EraseInitStruct.VoltageRange  = FLASH_VOLTAGE_RANGE_3; /* Requires 2.7V - 3.6V for fast erase */
 
-    // Передаем стартовый сектор и общее количество (в нашем случае Сектор 5 и 2 штуки)
+    /* Pass the starting sector and the sector count (sectors 5, 6 and 7) */
     EraseInitStruct.Sector        = APPL_SECTOR_START;
     EraseInitStruct.NbSectors     = FLASH_CPU_SECTORS_COUNT;
 
-    // Снимаем защиту с контроллера Flash
+    /* Unlock the Flash controller */
     if (HAL_FLASH_Unlock() != HAL_OK) return false;
 
-    // Очищаем возможные предыдущие ошибки
+    /* Clear possible previous error flags */
     CLEAR_FLAG;
 
-    // Запускаем процесс стирания сразу всех секторов приложения
+    /* Execute the erase of all application sectors at once */
     if (HAL_FLASHEx_Erase(&EraseInitStruct, &SectorError) != HAL_OK) {
         result = false;
     }
 
-    // Возвращаем защиту
+    /* Lock the Flash controller back */
     HAL_FLASH_Lock();
     
     return result;
 }
 
 /*
- * Быстрая запись 32-битных слов во внутреннюю Flash-память.
- * Используется FLASH_TYPEPROGRAM_WORD, что в 4 раза быстрее побайтовой записи.
- * * ВАЖНО: 
- * 1. Адрес `addr` должен быть кратен 4 (выровнен).
- * 2. Область памяти перед записью должна быть стерта (содержать 0xFFFFFFFF).
+ * Fast 32-bit word programming into internal Flash memory.
+ * Uses FLASH_TYPEPROGRAM_WORD, which is 4 times faster than byte programming.
+ * IMPORTANT:
+ * 1. The address `addr` must be 4-byte aligned.
+ * 2. The memory area must be erased (contain 0xFFFFFFFF) before writing.
  */
 bool eeprom_memory_write_words(const uint32_t *p_data, uint32_t addr, uint32_t words_count) {
     bool result = true;
 
-    // Проверка выравнивания адреса 
+    /* Guard: address must be 4-byte aligned */
     if (addr % 4 != 0) return false;
 
     if (HAL_FLASH_Unlock() != HAL_OK) return false;
 
     CLEAR_FLAG;
 
-    // Запись данных циклом по 4 байта
+    /* Program data word by word (4 bytes per write) */
     for (uint32_t i = 0; i < words_count; ++i) {
         if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, addr, p_data[i]) == HAL_OK) {
-            addr += 4; // Сдвигаем адрес на 4 байта вперед
+            addr += 4; /* Advance the write pointer by 4 bytes */
         } else {
             result = false;
-            break; // Прерываем запись при первой же ошибке
+            break; /* Halt programming on the first failure */
         }
     }
 
