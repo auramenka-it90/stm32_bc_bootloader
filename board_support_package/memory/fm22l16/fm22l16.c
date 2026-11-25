@@ -40,10 +40,10 @@ FSMC_Status_t fm22_set_protection(uint8_t sector_mask) {
 
 /* Fast 3-point test (start, middle, end) with data restore */
 FSMC_Status_t fm22_test_quick(void) {
-    /* Last point is kept below the locker block (FRAM_LOCKER_ADDR..FM22_MAX_ADDR):
-       writing test patterns into the locker CRC word would reset the
+    /* Last point is kept below the locker block (FRAM_LOCKER_ADDR_B..FM22_MAX_ADDR):
+       writing test patterns into the locker copies would reset the
        anti-tamper counter if power fails between pattern write and restore */
-    uint32_t pts[] = {0, FM22_MAX_ADDR / 2, FRAM_LOCKER_ADDR - 1};
+    uint32_t pts[] = {0, FM22_MAX_ADDR / 2, FRAM_LOCKER_ADDR_B - 1};
     uint16_t orig, pattern = 0xAA55;
     FSMC_Status_t status = FSMC_OK;
 

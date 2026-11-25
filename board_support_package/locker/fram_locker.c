@@ -38,35 +38,87 @@ static uint32_t calc_crc(const FramLocker_Data_t *data)
 }
 
 /** 
- * Read 16 bytes from FRAM into RAM buffer, verify checksum integrity
+ * Read one 16-byte copy from FRAM into a RAM struct, verify checksum integrity
  */
-static osStatus_t read_fram(void)
+static osStatus_t read_slot(uint32_t addr, FramLocker_Data_t *dst)
 {
     t_float_uint buf[4];  // 4 unions * 32-bit width = 8 words total
 
     for (int i = 0; i < 4; i++) {
-        if (fm22_read_union(FRAM_LOCKER_ADDR + i * 2, &buf[i]) != FSMC_OK)
+        if (fm22_read_union(addr + i * 2, &buf[i]) != FSMC_OK)
             return osError;
     }
-    memcpy(&fram_locker.data, buf, sizeof(FramLocker_Data_t));
-    return (calc_crc(&fram_locker.data) == fram_locker.data.crc) ? osOK : osError;
+    memcpy(dst, buf, sizeof(FramLocker_Data_t));
+    return (calc_crc(dst) == dst->crc) ? osOK : osError;
 }
 
 /** 
- * Save RAM buffer state (16 bytes) into FRAM with active CRC checksum update
+ * Write a RAM struct (16 bytes) into one FRAM copy, CRC is recomputed inside
  */
-static osStatus_t write_fram(void)
+static osStatus_t write_slot(uint32_t addr, const FramLocker_Data_t *src)
 {
     t_float_uint buf[4];
+    FramLocker_Data_t tmp = *src;
 
-    fram_locker.data.crc = calc_crc(&fram_locker.data);
-    memcpy(buf, &fram_locker.data, sizeof(FramLocker_Data_t));
+    tmp.crc = calc_crc(&tmp);
+    memcpy(buf, &tmp, sizeof(FramLocker_Data_t));
 
     for (int i = 0; i < 4; i++) {
-        if (fm22_write_union(FRAM_LOCKER_ADDR + i * 2, buf[i]) != FSMC_OK)
+        if (fm22_write_union(addr + i * 2, buf[i]) != FSMC_OK)
             return osError;
     }
     return osOK;
+}
+
+/** 
+ * Read the active state: take the valid copy with the greatest counter
+ * and re-sync the damaged or lagging copy. Returns osError only when
+ * BOTH copies are invalid (genuine first boot).
+ */
+static osStatus_t read_fram(void)
+{
+    FramLocker_Data_t a, b;
+    bool va = (read_slot(FRAM_LOCKER_ADDR,   &a) == osOK);
+    bool vb = (read_slot(FRAM_LOCKER_ADDR_B, &b) == osOK);
+
+    if (!va && !vb) return osError;
+
+    const FramLocker_Data_t *best = &a;
+    if (!va)                    best = &b;
+    else if (vb && b.counter > a.counter) best = &b;
+
+    fram_locker.data = *best;
+
+    if (!va || a.counter != best->counter) write_slot(FRAM_LOCKER_ADDR,   best);
+    if (!vb || b.counter != best->counter) write_slot(FRAM_LOCKER_ADDR_B, best);
+
+    return osOK;
+}
+
+/** 
+ * Save RAM buffer state (16 bytes) into FRAM.
+ * Copies are updated one by one, the lagging copy first: if power fails in
+ * the middle, the other copy still holds a valid value.
+ */
+static osStatus_t write_fram(void)
+{
+    FramLocker_Data_t a, b;
+    bool va = (read_slot(FRAM_LOCKER_ADDR,   &a) == osOK);
+    bool vb = (read_slot(FRAM_LOCKER_ADDR_B, &b) == osOK);
+
+    bool need_a = !va || (a.counter != fram_locker.data.counter);
+    bool need_b = !vb || (b.counter != fram_locker.data.counter);
+
+    fram_locker.data.crc = calc_crc(&fram_locker.data);
+
+    bool a_first = (va && vb) ? (a.counter <= b.counter) : (!va);
+
+    osStatus_t res1 = osOK, res2 = osOK;
+    if (need_a && a_first)  res1 = write_slot(FRAM_LOCKER_ADDR,   &fram_locker.data);
+    if (need_b)             res2 = write_slot(FRAM_LOCKER_ADDR_B, &fram_locker.data);
+    if (need_a && !a_first) res2 = write_slot(FRAM_LOCKER_ADDR,   &fram_locker.data);
+
+    return (res1 == osOK && res2 == osOK) ? osOK : osError;
 }
 
 /* ------------------------------------------------------------------------- */

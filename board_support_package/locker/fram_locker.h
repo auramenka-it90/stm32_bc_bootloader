@@ -19,8 +19,11 @@
 /*                    CONFIGURATION                                          */
 /* ------------------------------------------------------------------------- */
 
-/** Data starting address in FRAM (last 8 words of the memory array) */
+/** Slot A: data start address in FRAM (last 8 words of the memory array) */
 #define FRAM_LOCKER_ADDR        (FM22_MAX_ADDR - 7)  // 0x3FFF8
+
+/** Slot B: mirror copy of slot A (two last 8-word blocks are reserved) */
+#define FRAM_LOCKER_ADDR_B      (FM22_MAX_ADDR - 15) // 0x3FFE8
 
 /** Structure size in 16-bit words */
 #define FRAM_LOCKER_SIZE        8
