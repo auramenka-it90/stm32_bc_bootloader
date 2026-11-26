@@ -38,6 +38,19 @@ static AM1805_Status i2c_transfer_safe(uint8_t reg, uint8_t *pData, uint16_t siz
 }
 
 /*
+ * Clear the Oscillator Fail flag (OF) without disturbing the applied
+ * crystal calibration. Reading OSC_STAT, clearing only the OF bit and
+ * writing back keeps the XTCAL field (bits 7:6) intact, unlike a plain
+ * write of 0x00 which also erases the calibration offset.
+ */
+static AM1805_Status clear_osc_fail_flag(void) {
+    uint8_t s;
+    if (i2c_transfer_safe(AM1805_REG_OSC_STAT, &s, 1, true) != AM1805_OK) return AM1805_ERROR;
+    s &= (uint8_t)~AM1805_OSCSTAT_OF;
+    return i2c_transfer_safe(AM1805_REG_OSC_STAT, &s, 1, false);
+}
+
+/*
  * Atomic write to a protected register.
  * Handles mutex, KEY unlock, and data write in one uninterrupted sequence.
  * Prevents RTOS context switch from breaking the unlock sequence.
@@ -61,7 +74,7 @@ static AM1805_Status write_protected_reg(uint8_t key_val, uint8_t reg, uint8_t d
 bool AM1805_Init_Smart(I2C_HandleTypeDef *hi2c_ptr, osMutexId_t mutex_id) {
     p_hi2c = hi2c_ptr;
     i2c_mutex = mutex_id;
-    uint8_t data, ctrl1, osc_stat;
+    uint8_t ctrl1, osc_stat;
 
     if (HAL_I2C_IsDeviceReady(p_hi2c, AM1805_ADDR, 5, AM1805_I2C_TIMEOUT) != HAL_OK) return false;
 
@@ -73,9 +86,8 @@ bool AM1805_Init_Smart(I2C_HandleTypeDef *hi2c_ptr, osMutexId_t mutex_id) {
         return true; 
     }
 
-    // Сброс флага OF
-    data = 0x00;
-    if (i2c_transfer_safe(AM1805_REG_OSC_STAT, &data, 1, false) != AM1805_OK) return false;
+    // Сброс флага OF (XTCAL сохраняется)
+    if (clear_osc_fail_flag() != AM1805_OK) return false;
 
     // Включение XT кварца (0x00)
     if (write_protected_reg(AM1805_KEY_OSC, AM1805_REG_OSC_CTRL, 0x00) != AM1805_OK) return false;
@@ -204,12 +216,12 @@ bool AM1805_ForceInit(I2C_HandleTypeDef *hi2c_ptr, osMutexId_t mutex_id, uint32_
 
     p_hi2c = hi2c_ptr;
     i2c_mutex = mutex_id;
-    uint8_t data, ctrl1;
+    uint8_t ctrl1;
 
     if (HAL_I2C_IsDeviceReady(p_hi2c, AM1805_ADDR, 5, AM1805_I2C_TIMEOUT) != HAL_OK) return false;
 
-    data = 0x00; 
-    if (i2c_transfer_safe(AM1805_REG_OSC_STAT, &data, 1, false) != AM1805_OK) return false;
+    // Сброс флага OF (XTCAL сохраняется)
+    if (clear_osc_fail_flag() != AM1805_OK) return false;
 
     if (write_protected_reg(AM1805_KEY_OSC, AM1805_REG_OSC_CTRL, 0x00) != AM1805_OK) return false;
     if (write_protected_reg(AM1805_KEY_CONF, AM1805_REG_BREF, 0xB0) != AM1805_OK) return false;
@@ -228,11 +240,11 @@ bool AM1805_ForceInit(I2C_HandleTypeDef *hi2c_ptr, osMutexId_t mutex_id, uint32_
 
 AM1805_Status AM1805_SoftwareReset(void) {
     uint8_t reset_cmd = AM1805_KEY_RESET;
+    /* STATUS (0x0F) is read-only per datasheet; flags are cleared by
+       writing to OSC_STAT (done by AM1805_ForceInit that normally
+       follows this reset). Nothing else to do here. */
     AM1805_Status status = i2c_transfer_safe(AM1805_REG_KEY, &reset_cmd, 1, false);
     osDelay(10);
-
-    uint8_t clear_status = 0x00;
-    i2c_transfer_safe(AM1805_REG_STATUS, &clear_status, 1, false);
 
     return status;
 }

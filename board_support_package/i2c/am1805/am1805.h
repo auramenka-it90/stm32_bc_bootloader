@@ -14,7 +14,9 @@
 /* --- Параметры I2C --- */
 #define AM1805_ADDR              (0x69 << 1)
 #define AM1805_I2C_TIMEOUT       100
-#define AM1805_MUTEX_TIMEOUT     osWaitForever
+/* Finite mutex timeout: a stuck bus must not freeze the caller forever.
+   Kept equal to DS1621's mutex timeout (150 ms). */
+#define AM1805_MUTEX_TIMEOUT     150
 
 /* --- Пароли и защити --- */
 #define AM1805_INIT_PASSWORD     0x55AA3C0F   // Парола за принудителна инициализация
@@ -43,6 +45,14 @@
 #define AM1805_KEY_CONF          0x9D
 #define AM1805_KEY_RESET         0x3C
 #define AM1805_CTRL1_24H         0x40
+
+/* --- OSC_STAT (0x1D) bit masks, per datasheet tables 6-72/6-73 --- */
+#define AM1805_OSCSTAT_ACF       0x01 /* Autocalibration Failure, write 0 to clear */
+#define AM1805_OSCSTAT_OF        0x02 /* Oscillator Failure, write 0 to clear */
+#define AM1805_OSCSTAT_OMODE     0x10 /* read-only: 1 = RC drives clocks, 0 = XT */
+#define AM1805_OSCSTAT_LKO2      0x20
+#define AM1805_OSCSTAT_XTCAL_MSK 0xC0 /* Extended crystal calibration, 0/-122/-244/-366 ppm */
+#define AM1805_OSCSTAT_XTCAL_POS 6
 
 typedef enum {
     AM1805_OK = 0,
