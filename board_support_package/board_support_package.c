@@ -103,33 +103,36 @@ uint32_t init_hardware(void) {
 	}
 
 	//********** I2C bus initialization ***********
-	//********** DS1621 ************
+	//********** DS1621 (temperature sensor) ************
+	osMutexId_t shared_i2c_mutex = NULL;
 	if (DS1621_Init(&hi2c1)) {
 		if (DS1621_CreateTask() == NULL) {
 			test_hardware_result |= _B_FAULT_DS1621_;
 		}
-		osMutexId_t shared_i2c_mutex = DS1621_GetI2CMutex();
+		shared_i2c_mutex = DS1621_GetI2CMutex();
+	} else {
+		test_hardware_result |= _B_FAULT_DS1621_;
+	}
 
-		if (AM1805_Init_Smart(&hi2c1, shared_i2c_mutex)) {
-			if (AM1805_GetDiagnostics(&rtc_diag) == AM1805_OK) {
-				(void) rtc_diag;
+	//********** AM1805 (battery-backed RTC) - independent of DS1621 ************
+	// AM1805 tolerates a NULL mutex (runs lock-free); then the DS1621 task
+	// is not started, so there is no concurrent master on the bus.
+	if (AM1805_Init_Smart(&hi2c1, shared_i2c_mutex)) {
+		if (AM1805_GetDiagnostics(&rtc_diag) == AM1805_OK) {
+			(void) rtc_diag;
+		}
+		AM1805_Time_t now;
+
+		// Read RTC time. If it is uninitialized (year <= 2000), stamp the build date
+		if (AM1805_GetTime(&now) == AM1805_OK) {
+			if (now.year <= 2000) {
+				AM1805_Time_t build = AM1805_ParseBuildTime(__DATE__,__TIME__);
+				AM1805_SetTime(&build);
 			}
-			AM1805_Time_t now;
-
-			// Read RTC time. If it is uninitialized (year <= 2000), stamp the build date
-			if (AM1805_GetTime(&now) == AM1805_OK) {
-				if (now.year <= 2000) {
-					AM1805_Time_t build = AM1805_ParseBuildTime(__DATE__,__TIME__);
-					AM1805_SetTime(&build);
-				}
-			}
-
-		} else {
-			test_hardware_result |= _B_FAULT_AM1805_;
 		}
 
 	} else {
-		test_hardware_result |= _B_FAULT_DS1621_;
+		test_hardware_result |= _B_FAULT_AM1805_;
 	}
 
 #ifdef	_BHV_LOCKER_CHECK_
