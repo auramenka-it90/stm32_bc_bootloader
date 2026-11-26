@@ -81,8 +81,12 @@ bool AM1805_Init_Smart(I2C_HandleTypeDef *hi2c_ptr, osMutexId_t mutex_id) {
     if (i2c_transfer_safe(AM1805_REG_CTRL1, &ctrl1, 1, true) != AM1805_OK) return false;
     if (i2c_transfer_safe(AM1805_REG_OSC_STAT, &osc_stat, 1, true) != AM1805_OK) return false;
 
-    // Пропуск настройки: WRTC=0 (часы идут) и OMODE=0 (кварц активен, маска 0x10)
-    if (((ctrl1 & 0x01) == 0) && ((osc_stat & 0x10) == 0)) {
+    // Skip configuration: WRTC=0 (clock running), XT selected (OMODE=0) AND
+    // no oscillator failure latched (OF=0). A frozen oscillator keeps WRTC=0
+    // and OMODE=0 but sets OF, so it falls through to full restart below.
+    if (((ctrl1 & 0x01) == 0) &&
+        ((osc_stat & AM1805_OSCSTAT_OMODE) == 0) &&
+        ((osc_stat & AM1805_OSCSTAT_OF) == 0)) {
         return true; 
     }
 
@@ -101,6 +105,14 @@ bool AM1805_Init_Smart(I2C_HandleTypeDef *hi2c_ptr, osMutexId_t mutex_id) {
     // Запуск счета: сброс WRTC, включение режима 24h через макрос
     ctrl1 &= ~(0x01 | AM1805_CTRL1_24H);
     if (i2c_transfer_safe(AM1805_REG_CTRL1, &ctrl1, 1, false) != AM1805_OK) return false;
+
+    // Verify the crystal actually resumed oscillating: OF is re-latched by
+    // the chip when XT stays below 8 kHz. If OF comes back set, the crystal
+    // oscillator is dead - return false so init_hardware() raises
+    // _B_FAULT_AM1805_. The 1 s wait only happens on this rare reconfig path.
+    HAL_Delay(1000);
+    if (i2c_transfer_safe(AM1805_REG_OSC_STAT, &osc_stat, 1, true) != AM1805_OK) return false;
+    if (osc_stat & AM1805_OSCSTAT_OF) return false;
 
     return true;
 }
