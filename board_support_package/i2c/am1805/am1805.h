@@ -41,10 +41,28 @@
 #define AM1805_REG_BATMODE_IO    0x27
 
 /* --- Командные ключи и маски --- */
-#define AM1805_KEY_OSC           0xA1
-#define AM1805_KEY_CONF          0x9D
-#define AM1805_KEY_RESET         0x3C
-#define AM1805_CTRL1_24H         0x40
+#define AM1805_KEY_OSC           0xA1 /* unlocks write access to OSC_CTRL (0x1C) */
+#define AM1805_KEY_CONF          0x9D /* unlocks Trickle/BREF/AFCTRL/Batmode/OutCtrl */
+#define AM1805_KEY_RESET         0x3C /* write to Configuration Key = software reset */
+
+/* --- CTRL1 (0x10) bit masks, per datasheet tables 6-39/6-40 --- */
+#define AM1805_CTRL1_WRTC        0x01 /* Write RTC: must be set to write counters */
+#define AM1805_CTRL1_12H         0x40 /* 12/24 select: 0 = 24h mode, 1 = 12h mode */
+
+/* --- OSC_CTRL (0x1C) values, per datasheet tables 6-70/6-71 --- */
+/* OSEL=0 (XT oscillator), ACAL=0 (no autocal), no AOS/FOS auto-switch to RC */
+#define AM1805_OSCCTRL_XT        0x00
+
+/* --- BREF (0x21) values, per datasheet tables 6-80/6-81 --- */
+/* BREF field is bits 7:4; 1011 = VBAT falling 2.1 V / rising 2.5 V */
+#define AM1805_BREF_2V1          0xB0
+
+/* --- BATMODE_IO (0x27), per datasheet section 6.10.4 --- */
+#define AM1805_BATMODE_IOBM      0x80 /* IOBM=1: disable I/O on brownout */
+
+/* --- CAL_XT (0x14) bit masks, per datasheet tables 6-50/6-51 --- */
+#define AM1805_CALXT_CMDX        0x80 /* 0 = normal step 1.907 ppm, 1 = coarse 3.814 ppm */
+#define AM1805_CALXT_OFFSETX_MSK 0x7F /* two's complement, -64..+63 steps */
 
 /* --- OSC_STAT (0x1D) bit masks, per datasheet tables 6-72/6-73 --- */
 #define AM1805_OSCSTAT_ACF       0x01 /* Autocalibration Failure, write 0 to clear */

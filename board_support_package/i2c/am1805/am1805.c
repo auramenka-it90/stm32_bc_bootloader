@@ -84,7 +84,7 @@ bool AM1805_Init_Smart(I2C_HandleTypeDef *hi2c_ptr, osMutexId_t mutex_id) {
     // Skip configuration: WRTC=0 (clock running), XT selected (OMODE=0) AND
     // no oscillator failure latched (OF=0). A frozen oscillator keeps WRTC=0
     // and OMODE=0 but sets OF, so it falls through to full restart below.
-    if (((ctrl1 & 0x01) == 0) &&
+    if (((ctrl1 & AM1805_CTRL1_WRTC) == 0) &&
         ((osc_stat & AM1805_OSCSTAT_OMODE) == 0) &&
         ((osc_stat & AM1805_OSCSTAT_OF) == 0)) {
         return true; 
@@ -93,17 +93,17 @@ bool AM1805_Init_Smart(I2C_HandleTypeDef *hi2c_ptr, osMutexId_t mutex_id) {
     // Сброс флага OF (XTCAL сохраняется)
     if (clear_osc_fail_flag() != AM1805_OK) return false;
 
-    // Включение XT кварца (0x00)
-    if (write_protected_reg(AM1805_KEY_OSC, AM1805_REG_OSC_CTRL, 0x00) != AM1805_OK) return false;
+    // Включение XT кварца (OSEL=0, autocal off)
+    if (write_protected_reg(AM1805_KEY_OSC, AM1805_REG_OSC_CTRL, AM1805_OSCCTRL_XT) != AM1805_OK) return false;
 
-    // BREF = 2.1V (0xB0)
-    if (write_protected_reg(AM1805_KEY_CONF, AM1805_REG_BREF, 0xB0) != AM1805_OK) return false;
+    // BREF = 2.1V
+    if (write_protected_reg(AM1805_KEY_CONF, AM1805_REG_BREF, AM1805_BREF_2V1) != AM1805_OK) return false;
 
-    // BATMODE_IO: IOBM = 1 (0x80)
-    if (write_protected_reg(AM1805_KEY_CONF, AM1805_REG_BATMODE_IO, 0x80) != AM1805_OK) return false;
+    // BATMODE_IO: IOBM = 1
+    if (write_protected_reg(AM1805_KEY_CONF, AM1805_REG_BATMODE_IO, AM1805_BATMODE_IOBM) != AM1805_OK) return false;
 
-    // Запуск счета: сброс WRTC, включение режима 24h через макрос
-    ctrl1 &= ~(0x01 | AM1805_CTRL1_24H);
+    // Запуск счета: сброс WRTC, режим 24h (сброс бита 12/24)
+    ctrl1 &= ~(AM1805_CTRL1_WRTC | AM1805_CTRL1_12H);
     if (i2c_transfer_safe(AM1805_REG_CTRL1, &ctrl1, 1, false) != AM1805_OK) return false;
 
     // Verify the crystal actually resumed oscillating: OF is re-latched by
@@ -158,7 +158,7 @@ AM1805_Status AM1805_SetTime(AM1805_Time_t *time) {
 
     if ((status = i2c_transfer_raw(AM1805_REG_CTRL1, &ctrl1, 1, true)) != AM1805_OK) goto unlock;
 
-    ctrl1 |= 0x01; // Установка WRTC=1
+    ctrl1 |= AM1805_CTRL1_WRTC; // Установка WRTC=1
     if ((status = i2c_transfer_raw(AM1805_REG_CTRL1, &ctrl1, 1, false)) != AM1805_OK) goto unlock;
 
     buffer[0] = dec2bcd(time->hundredths);
@@ -172,7 +172,7 @@ AM1805_Status AM1805_SetTime(AM1805_Time_t *time) {
 
     if ((status = i2c_transfer_raw(AM1805_REG_HUNDREDTHS, buffer, 8, false)) != AM1805_OK) goto unlock;
 
-    ctrl1 &= ~0x01; // Сброс WRTC=0
+    ctrl1 &= (uint8_t)~AM1805_CTRL1_WRTC; // Сброс WRTC=0
     status = i2c_transfer_raw(AM1805_REG_CTRL1, &ctrl1, 1, false);
 
 unlock:
@@ -235,15 +235,14 @@ bool AM1805_ForceInit(I2C_HandleTypeDef *hi2c_ptr, osMutexId_t mutex_id, uint32_
     // Сброс флага OF (XTCAL сохраняется)
     if (clear_osc_fail_flag() != AM1805_OK) return false;
 
-    if (write_protected_reg(AM1805_KEY_OSC, AM1805_REG_OSC_CTRL, 0x00) != AM1805_OK) return false;
-    if (write_protected_reg(AM1805_KEY_CONF, AM1805_REG_BREF, 0xB0) != AM1805_OK) return false;
-    if (write_protected_reg(AM1805_KEY_CONF, AM1805_REG_BATMODE_IO, 0x80) != AM1805_OK) return false;
+    if (write_protected_reg(AM1805_KEY_OSC, AM1805_REG_OSC_CTRL, AM1805_OSCCTRL_XT) != AM1805_OK) return false;
+    if (write_protected_reg(AM1805_KEY_CONF, AM1805_REG_BREF, AM1805_BREF_2V1) != AM1805_OK) return false;
+    if (write_protected_reg(AM1805_KEY_CONF, AM1805_REG_BATMODE_IO, AM1805_BATMODE_IOBM) != AM1805_OK) return false;
 
     if (i2c_transfer_safe(AM1805_REG_CTRL1, &ctrl1, 1, true) != AM1805_OK) return false;
     
-    // Запуск счета: сброс WRTC, включение режима 24h через макрос
-    ctrl1 &= ~(0x01 | AM1805_CTRL1_24H);
-   // ctrl1=	0;
+    // Запуск счета: сброс WRTC, режим 24h (сброс бита 12/24)
+    ctrl1 &= ~(AM1805_CTRL1_WRTC | AM1805_CTRL1_12H);
 
     if (i2c_transfer_safe(AM1805_REG_CTRL1, &ctrl1, 1, false) != AM1805_OK) return false;
 
@@ -304,13 +303,14 @@ AM1805_Status AM1805_SetCalibrationByDrift(float drift_sec_per_hour) {
 
     status = i2c_transfer_raw(AM1805_REG_OSC_STAT, &reg_1d, 1, true);
     if (status == AM1805_OK) {
-        reg_1d = (reg_1d & 0x3F) | (xtcal << 6);
+        reg_1d = (uint8_t)((reg_1d & (uint8_t)~AM1805_OSCSTAT_XTCAL_MSK) |
+                           ((xtcal << AM1805_OSCSTAT_XTCAL_POS) & AM1805_OSCSTAT_XTCAL_MSK));
         status = i2c_transfer_raw(AM1805_REG_OSC_STAT, &reg_1d, 1, false);
     }
 
     if (status == AM1805_OK) {
-        uint8_t reg_14 = (uint8_t)(offsetx & 0x7F);
-        if (cmdx == 1) reg_14 |= 0x80;
+        uint8_t reg_14 = (uint8_t)(offsetx & AM1805_CALXT_OFFSETX_MSK);
+        if (cmdx == 1) reg_14 |= AM1805_CALXT_CMDX;
         status = i2c_transfer_raw(AM1805_REG_CAL_XT, &reg_14, 1, false);
     }
 
